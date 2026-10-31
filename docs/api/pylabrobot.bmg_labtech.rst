@@ -15,6 +15,7 @@ VANTAstar
    VANTAstarDevice
    driver.master.VANTAstarDriver
    driver.master.VANTAstarStatus
+   driver.features.drawer.Drawer
    driver.master.MonochromatorSettings
    driver.master.PlateGeometry
    driver.master.WellScan

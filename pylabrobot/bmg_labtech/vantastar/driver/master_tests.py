@@ -779,17 +779,6 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(commands(driver)[:2], [bytes([0x80]), INIT])
     self.assertEqual(driver.discover().serial_number, "0421-000446")
 
-  async def test_drawer(self):
-    """Opening and closing the drawer send Voyager's plate out and plate in commands."""
-    replies = deque(
-      [STATUS_IDLE, STATUS_IDLE, STATUS_DRAWER_OPEN, STATUS_DRAWER_OPEN, STATUS_IDLE, STATUS_IDLE]
-    )
-    driver = make_driver(lambda p: replies.popleft())
-    await driver.open_drawer()
-    await driver.close_drawer()
-    sent = [c for c in commands(driver) if c[0] == 0x03]
-    self.assertEqual(sent, [PLATE_OUT, PLATE_IN])
-
   async def test_shake_moves_the_plate_in_when_the_motors_are_off(self):
     """Shaking with the motors off moves the plate in first, then shakes."""
     replies = deque([STATUS_MOTORS_OFF] + [STATUS_IDLE] * 6)

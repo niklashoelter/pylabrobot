@@ -3,6 +3,7 @@ USB link with the reader's captured replies."""
 
 import unittest
 from collections import deque
+from dataclasses import replace
 from typing import Any, Callable, Deque, Dict, List
 
 from pylabrobot.bmg_labtech.vantastar.device import (
@@ -11,6 +12,7 @@ from pylabrobot.bmg_labtech.vantastar.device import (
   get_plate_geometry,
 )
 from pylabrobot.bmg_labtech.vantastar.driver import master_tests
+from pylabrobot.bmg_labtech.vantastar.driver.master import VANTAstarDriver, VANTAstarStatus
 from pylabrobot.bmg_labtech.vantastar.driver.responses_tests import (
   ABSORBANCE_FIRST_PAGE,
   ABSORBANCE_LAST_PAGE,
@@ -30,9 +32,9 @@ def make_device_answering(respond: Callable[[bytes], bytes]) -> VANTAstarDevice:
   device = VANTAstarDevice(io=master_tests.FakeUSB(respond))
   device.driver.default_poll_interval = 0
   device.driver.measurement_poll_interval = 0
-  device.plate_holder._drawer_open = True
+  device.drawer.drawer_open = True
   device.plate_holder.assign_child_resource(cor_96_wellplate_360uL_Fb(name="plate"))
-  device.plate_holder._drawer_open = False
+  device.drawer.drawer_open = False
   return device
 
 
@@ -223,20 +225,37 @@ class StopTests(unittest.IsolatedAsyncioTestCase):
   """Stopping the device while a plate is in the reader."""
 
   async def test_drawer_open_when_a_plate_is_left_in(self):
-    """When the driver's stop fails over a plate left in, the plate holder counts the drawer as
-    open, so the plate can be taken off."""
-    device = make_device([])
+    """When stop finds a plate left in, it opens the drawer, so the plate can be taken off."""
+    device = make_device_answering(lambda p: master_tests.STATUS_IDLE)
 
-    async def stop(accept_plate_left_in_device: bool = False) -> None:
-      """Fail as the driver does when a plate is still in the reader."""
-      raise RuntimeError("a plate is still in the reader")
+    async def request_status(retries: int = 5) -> VANTAstarStatus:
+      """The recorded status for where the drawer is, with a plate: none is recorded with one."""
+      moved = any(c[0] == 0x03 for c in master_tests.commands(device.driver))
+      reply = master_tests.STATUS_DRAWER_OPEN if moved else master_tests.STATUS_IDLE
+      return replace(VANTAstarDriver._parse_status(reply), plate_detected=True)
 
-    device.driver.stop = stop  # type: ignore[method-assign]
+    device.driver.request_status = request_status  # type: ignore[method-assign]
     with self.assertRaises(RuntimeError):
       await device.stop()
     plate = device.plate_holder.resource
     assert plate is not None
     device.plate_holder.unassign_child_resource(plate)  # allowed: the drawer is open
+
+
+class PlateHolderTests(unittest.TestCase):
+  """The plate holder follows the drawer."""
+
+  def test_plate_holder_follows_the_drawer(self):
+    """A plate goes on only while the drawer is open; closed or never sensed, it is refused."""
+    device = VANTAstarDevice(io=master_tests.FakeUSB(lambda p: master_tests.STATUS_IDLE))
+    plate = cor_96_wellplate_360uL_Fb(name="plate")
+    for drawer_open in (None, False):
+      device.drawer.drawer_open = drawer_open
+      with self.assertRaises(RuntimeError):
+        device.plate_holder.assign_child_resource(plate)
+    device.drawer.drawer_open = True
+    device.plate_holder.assign_child_resource(plate)
+    self.assertIs(device.plate_holder.resource, plate)
 
 
 class ArgumentTests(unittest.IsolatedAsyncioTestCase):

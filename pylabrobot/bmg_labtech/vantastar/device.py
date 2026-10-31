@@ -10,6 +10,7 @@ from pylabrobot.lib.fluorescence.results import FluorescenceResult, Fluorescence
 from pylabrobot.lib.luminescence.results import LuminescenceResult
 from pylabrobot.resources import Coordinate, CrossSectionType, Plate, PlateHolder, Resource, Well
 
+from .driver.features.drawer import Drawer
 from .driver.master import (
   DEFAULT_APERTURE_DISTANCE,
   LUMINESCENCE_NO_FILTER,
@@ -52,10 +53,11 @@ MAXIMUM_ABSORBANCE_WAVELENGTH = 1000
 class _VANTAstarPlateHolder(PlateHolder):
   """The drawer's plate holder: a plate goes on or comes off only while the drawer is open."""
 
-  def __init__(self, name: str):
+  def __init__(self, name: str, drawer: Drawer):
     """
     Args:
       name: the resource name.
+      drawer: the drawer that carries this plate holder.
     """
     super().__init__(
       name=name,
@@ -66,17 +68,17 @@ class _VANTAstarPlateHolder(PlateHolder):
       child_location=Coordinate.zero(),
       model="vantastar_plate_holder",
     )
-    self._drawer_open: Optional[bool] = None
+    self._drawer = drawer
 
   def _require_drawer_open(self, action: str) -> None:
-    """Raise unless the drawer was out when last moved.
+    """Raise unless the drawer was out when last sensed.
 
     Raises:
-      RuntimeError: if the drawer has not been moved yet, or was moved in.
+      RuntimeError: if the drawer has not been sensed yet, or was sensed closed.
     """
-    if self._drawer_open is None:
+    if self._drawer.drawer_open is None:
       raise RuntimeError(f"cannot {action}: the drawer has not been sensed; open it first")
-    if not self._drawer_open:
+    if not self._drawer.drawer_open:
       raise RuntimeError(f"cannot {action}: the drawer is closed; open it first")
 
   def check_can_drop_resource_here(self, resource: Resource, *, reassign: bool = True) -> None:
@@ -150,7 +152,8 @@ def _get_identifier(row: int, column: int) -> str:
 
 
 class VANTAstarDevice(Resource):
-  """The VANTAstar as a PyLabRobot resource: its plate holder and the driver that runs it.
+  """The VANTAstar as a PyLabRobot resource: its plate holder, its drawer, and the driver that runs
+  it.
 
   Build one with the ``VANTAstar`` factory.
   """
@@ -183,7 +186,7 @@ class VANTAstarDevice(Resource):
       model="VANTAstar",
     )
     self.driver = VANTAstarDriver(device_id=device_id, io=io, name=name)
-    self.plate_holder = _VANTAstarPlateHolder(f"{name}_plate_holder")
+    self.plate_holder = _VANTAstarPlateHolder(f"{name}_plate_holder", self.driver.drawer)
     self.assign_child_resource(self.plate_holder, location=Coordinate.zero())
 
   def check_can_drop_resource_here(self, resource: Resource, *, reassign: bool = True) -> None:
@@ -203,6 +206,11 @@ class VANTAstarDevice(Resource):
       self.check_can_drop_resource_here(resource, reassign=reassign)
     return super().assign_child_resource(resource, location, reassign)
 
+  @property
+  def drawer(self) -> Drawer:
+    """The drawer."""
+    return self.driver.drawer
+
   async def setup(self) -> None:
     """Connect and initialize the reader (about 10 s)."""
     await self.driver.setup()
@@ -214,22 +222,7 @@ class VANTAstarDevice(Resource):
       RuntimeError: if a plate is still in the reader, unless ``accept_plate_left_in_device``; the
         drawer is then open for it to be taken out.
     """
-    try:
-      await self.driver.stop(accept_plate_left_in_device=accept_plate_left_in_device)
-    except RuntimeError:
-      self.plate_holder._drawer_open = True
-      raise
-    self.plate_holder._drawer_open = False
-
-  async def open_drawer(self) -> None:
-    """Move the drawer out (about 7 s)."""
-    await self.driver.open_drawer()
-    self.plate_holder._drawer_open = True
-
-  async def close_drawer(self) -> None:
-    """Move the drawer in (about 10 s)."""
-    await self.driver.close_drawer()
-    self.plate_holder._drawer_open = False
+    await self.driver.stop(accept_plate_left_in_device=accept_plate_left_in_device)
 
   def _get_plate(self, plate: Optional[Plate]) -> Plate:
     """``plate``, or the plate on the plate holder.
@@ -1080,7 +1073,6 @@ class VANTAstarDevice(Resource):
       duration: seconds; the tested reader reports 1-3600 s as its range.
     """
     await self.driver.shake(mode, speed, duration)
-    self.plate_holder._drawer_open = False
 
   async def set_temperature(self, temperature: float) -> None:
     """Heat the incubator to ``temperature`` degrees C.

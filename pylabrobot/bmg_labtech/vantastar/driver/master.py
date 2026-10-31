@@ -37,6 +37,7 @@ from .errors import (
   DeviceError,
   describe_codes,
 )
+from .features.drawer import Drawer
 from .framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT, get_packet_value, is_acceptance
 from .responses import (
   CONFIRMATION_ID,
@@ -146,13 +147,6 @@ class ValuesType:
   TIME_DATA = 0x03
   GAIN_DATA = 0x05
   LAYOUT_WELL_LIST = 0x1D
-
-
-class MovePlateMode:
-  """PlateCommand byte 1."""
-
-  PLATE_IN = 0x00
-  PLATE_OUT = 0x01
 
 
 # INIT flag bytes: group 2 (motor and hardware disables, bit 7 = MoveToLockPos), group 10, group 15
@@ -521,6 +515,7 @@ class VANTAstarDriver:
     self._last_warning: Optional[Codes] = None
     self.configuration = VANTAstarConfiguration()
     self._hardware_info_reply: Optional[bytes] = None
+    self.drawer = Drawer(self)
 
   # -- USB setup / teardown -------------------------------------------------
 
@@ -813,36 +808,6 @@ class VANTAstarDriver:
   async def _move_plate(self, mode: int) -> None:
     """PlateCommand: the move mode, then X and Y positions (0, unused by these moves)."""
     await self.send_command(CommandId.PLATE, bytes([mode, 0x00, 0x00, 0x00, 0x00]))
-
-  async def open_drawer(self) -> None:
-    """Move the plate carrier out (about 7 s) and wait until it is out and idle.
-
-    Raises:
-      TimeoutError: if the drawer is not out after 20 s.
-      CommandRefusedError: if the reader refuses the move.
-    """
-    await self._move_plate(MovePlateMode.PLATE_OUT)
-    await self._wait_until_ready(
-      timeout=20.0,
-      poll_interval=self.default_poll_interval,
-      until=lambda s: not s.busy and s.drawer_open,
-    )
-    logger.info("drawer open")
-
-  async def close_drawer(self) -> None:
-    """Move the plate carrier in (about 10 s) and wait until it is in and idle.
-
-    Raises:
-      TimeoutError: if the drawer is not in after 20 s.
-      CommandRefusedError: if the reader refuses the move.
-    """
-    await self._move_plate(MovePlateMode.PLATE_IN)
-    await self._wait_until_ready(
-      timeout=20.0,
-      poll_interval=self.default_poll_interval,
-      until=lambda s: not s.busy and not s.drawer_open,
-    )
-    logger.info("drawer closed")
 
   # -- stop -----------------------------------------------------------------
 
@@ -1376,7 +1341,7 @@ class VANTAstarDriver:
     body = self.build_shake(mode, speed, duration)
     status = await self.request_status()
     if status.drawer_open or not status.motors_enabled:
-      await self.close_drawer()
+      await self.drawer.close()
     await self.send_command(CommandId.IDLE_MOVE, body)
     await self._wait_until_ready(duration + 60.0, self.default_poll_interval)
 
@@ -1527,17 +1492,16 @@ class VANTAstarDriver:
       if self._measuring:
         await self._drain_and_stop()
       try:
-        status = await self.request_status()
-        if status.drawer_open:
+        if await self.drawer.sense_drawer_open():
           try:
-            await self.close_drawer()
+            await self.drawer.close()
           except (CommandRefusedError, TimeoutError):
             logger.warning("the drawer did not close", exc_info=True)
 
-        status = await self.request_status()
-        if not accept_plate_left_in_device and status.plate_detected:
+        plate_present = await self.drawer.sense_plate_present()
+        if not accept_plate_left_in_device and plate_present:
           try:
-            await self.open_drawer()
+            await self.drawer.open()
           except (CommandRefusedError, TimeoutError):
             logger.warning("the drawer did not open", exc_info=True)
           raise RuntimeError(
