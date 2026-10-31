@@ -16,6 +16,16 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from pylabrobot.bmg_labtech.protocol.errors import FrameError
+from pylabrobot.bmg_labtech.protocol.framing import (
+  USB_ACK,
+  USB_CONTINUATION,
+  USB_FIRST,
+  USB_HEADER_SIZE,
+  USB_PACKET_SIZE,
+  USB_SINGLE,
+  usb_packet_type,
+  usb_wrap_payload,
+)
 from pylabrobot.io.usb import USB
 
 from .configuration import HARDWARE_INFO_ID, VANTAstarConfiguration, parse_hardware_info
@@ -27,19 +37,7 @@ from .errors import (
   DeviceError,
   describe_codes,
 )
-from .framing import (
-  ACKNOWLEDGEMENT,
-  CONTINUATION,
-  FIRST,
-  HEADER_SIZE,
-  HOST_ACKNOWLEDGEMENT,
-  PACKET_SIZE,
-  SINGLE,
-  get_packet_type,
-  get_packet_value,
-  is_acceptance,
-  wrap_payload,
-)
+from .framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT, get_packet_value, is_acceptance
 from .responses import (
   CONFIRMATION_ID,
   TIME_DATA_ID,
@@ -554,7 +552,7 @@ class VANTAstarDriver:
       FrameError: if no packet arrives in time.
     """
     try:
-      return await self.io.read(timeout=self._USB_PACKET_TIMEOUT, size=PACKET_SIZE)
+      return await self.io.read(timeout=self._USB_PACKET_TIMEOUT, size=USB_PACKET_SIZE)
     except TimeoutError as e:
       raise FrameError(f"No USB packet within {self._USB_PACKET_TIMEOUT} s") from e
 
@@ -565,11 +563,11 @@ class VANTAstarDriver:
     continuation packets.  A multi-packet reply is acknowledged by the host before the
     reader sends its continuations.
     """
-    packets = wrap_payload(payload)
+    packets = usb_wrap_payload(payload, header=DEVICE_ID)
     await self.io.write(packets[0])
     if len(packets) > 1:
       ack = await self._read_packet()
-      if get_packet_type(ack) != ACKNOWLEDGEMENT:
+      if usb_packet_type(ack, header=DEVICE_ID) != USB_ACK:
         raise FrameError(f"expected an acknowledgement, got {ack.hex()}")
       if not is_acceptance(ack):
         raise FrameError(f"reader refused the continuation packets: {ack.hex()}")
@@ -577,25 +575,25 @@ class VANTAstarDriver:
         await self.io.write(packet)
 
     first = await self._read_packet()
-    ptype = get_packet_type(first)
-    if ptype == SINGLE:
+    ptype = usb_packet_type(first, header=DEVICE_ID)
+    if ptype == USB_SINGLE:
       length = get_packet_value(first)
-      return bytes(first[HEADER_SIZE : HEADER_SIZE + length])
-    if ptype != FIRST:
+      return bytes(first[USB_HEADER_SIZE : USB_HEADER_SIZE + length])
+    if ptype != USB_FIRST:
       raise FrameError(f"unexpected packet type 0x{ptype:02x}: {first.hex()}")
 
     total = get_packet_value(first)
-    reply = bytearray(first[HEADER_SIZE:])
+    reply = bytearray(first[USB_HEADER_SIZE:])
     await self.io.write(HOST_ACKNOWLEDGEMENT)
     sequence = 0
     while len(reply) < total:
       packet = await self._read_packet()
-      if get_packet_type(packet) != CONTINUATION:
+      if usb_packet_type(packet, header=DEVICE_ID) != USB_CONTINUATION:
         raise FrameError(f"expected a continuation packet, got {packet.hex()}")
       sequence += 1
       if get_packet_value(packet) != sequence:
         raise FrameError(f"expected continuation packet {sequence}, got {packet.hex()}")
-      reply.extend(packet[HEADER_SIZE:])
+      reply.extend(packet[USB_HEADER_SIZE:])
     return bytes(reply[:total])
 
   async def exchange(self, payload: bytes) -> bytes:

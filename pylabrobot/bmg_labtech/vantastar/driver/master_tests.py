@@ -6,16 +6,16 @@ from collections import deque
 from dataclasses import replace
 from typing import Any, Callable, Deque, Dict, List, Optional
 
-from pylabrobot.bmg_labtech.vantastar.driver.configuration_tests import HARDWARE_INFO
 from pylabrobot.bmg_labtech.protocol.errors import FrameError
-from pylabrobot.bmg_labtech.vantastar.driver.errors import CommandRefusedError, DeviceError
-from pylabrobot.bmg_labtech.vantastar.driver.framing import (
-  CONTINUATION,
-  FIRST,
-  HOST_ACKNOWLEDGEMENT,
-  SINGLE,
-  wrap_payload,
+from pylabrobot.bmg_labtech.protocol.framing import (
+  USB_CONTINUATION,
+  USB_FIRST,
+  USB_SINGLE,
+  usb_wrap_payload,
 )
+from pylabrobot.bmg_labtech.vantastar.driver.configuration_tests import HARDWARE_INFO
+from pylabrobot.bmg_labtech.vantastar.driver.errors import CommandRefusedError, DeviceError
+from pylabrobot.bmg_labtech.vantastar.driver.framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT
 from pylabrobot.bmg_labtech.vantastar.driver.master import (
   LUMINESCENCE_NO_FILTER,
   STANDARD_96,
@@ -253,7 +253,7 @@ class FakeUSB(USB):
     """Record a whole command payload and queue its reply: the first packet at once, the
     continuations after the host's acknowledgement."""
     self.commands.append(payload)
-    packets = wrap_payload(self.respond(payload))
+    packets = usb_wrap_payload(self.respond(payload), header=DEVICE_ID)
     self._to_host.append(packets[0])
     self._continuations = packets[1:]
 
@@ -266,12 +266,12 @@ class FakeUSB(USB):
       self._continuations = []
       return
     packet_type, value, chunk = data[2], int.from_bytes(data[3:7], "big"), data[7:]
-    if packet_type == SINGLE:
+    if packet_type == USB_SINGLE:
       self._receive(chunk[:value])
-    elif packet_type == FIRST:
+    elif packet_type == USB_FIRST:
       self._receiving, self._receiving_length = bytearray(chunk), value
       self._to_host.append(bytes.fromhex("00160401"))
-    elif packet_type == CONTINUATION:
+    elif packet_type == USB_CONTINUATION:
       assert self._receiving is not None
       self._receiving.extend(chunk)
       if len(self._receiving) >= self._receiving_length:

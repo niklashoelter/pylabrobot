@@ -8,20 +8,21 @@ capture.
 import unittest
 
 from pylabrobot.bmg_labtech.protocol.errors import FrameError
+from pylabrobot.bmg_labtech.protocol.framing import (
+  USB_ACK,
+  USB_CHUNK_SIZE,
+  USB_CONTINUATION,
+  USB_FIRST,
+  USB_HEADER_SIZE,
+  USB_SINGLE,
+  usb_packet_type,
+  usb_wrap_payload,
+)
 from pylabrobot.bmg_labtech.vantastar.driver.framing import (
-  ACKNOWLEDGEMENT,
-  CHUNK_SIZE,
-  CONTINUATION,
   DEVICE_ID,
-  FIRST,
-  HEADER_SIZE,
   HOST_ACKNOWLEDGEMENT,
-  MAXIMUM_PAYLOAD,
-  SINGLE,
-  get_packet_type,
   get_packet_value,
   is_acceptance,
-  wrap_payload,
 )
 
 
@@ -34,52 +35,52 @@ class WrapPayloadTests(unittest.TestCase):
 
   def test_short_payload_is_one_single_packet(self):
     """A 1-byte payload is one single packet whose value is the payload length."""
-    (packet,) = wrap_payload(b"\x80")
+    (packet,) = usb_wrap_payload(b"\x80", header=DEVICE_ID)
     self.assertEqual(packet, bytes.fromhex("0016010000000180"))
-    self.assertEqual(get_packet_type(packet), SINGLE)
+    self.assertEqual(usb_packet_type(packet, header=DEVICE_ID), USB_SINGLE)
     self.assertEqual(get_packet_value(packet), 1)
 
   def test_57_bytes_fill_one_packet(self):
     """A 57-byte payload fills one 64-byte single packet."""
-    (packet,) = wrap_payload(bytes(range(CHUNK_SIZE)))
+    (packet,) = usb_wrap_payload(bytes(range(USB_CHUNK_SIZE)), header=DEVICE_ID)
     self.assertEqual(len(packet), 64)
-    self.assertEqual(packet[:HEADER_SIZE], bytes.fromhex("00160100000039"))
+    self.assertEqual(packet[:USB_HEADER_SIZE], bytes.fromhex("00160100000039"))
 
   def test_58_bytes_split_into_first_and_continuation(self):
     """A 58-byte payload splits into a first packet carrying the total length and continuation
     packet 1."""
-    payload = bytes(i & 0xFF for i in range(CHUNK_SIZE + 1))
-    packets = wrap_payload(payload)
+    payload = bytes(i & 0xFF for i in range(USB_CHUNK_SIZE + 1))
+    packets = usb_wrap_payload(payload, header=DEVICE_ID)
     self.assertEqual([len(p) for p in packets], [64, 8])
-    self.assertEqual(packets[0][:HEADER_SIZE], bytes.fromhex("0016020000003a"))
-    self.assertEqual(packets[1][:HEADER_SIZE], bytes.fromhex("00160300000001"))
-    self.assertEqual(get_packet_type(packets[0]), FIRST)
+    self.assertEqual(packets[0][:USB_HEADER_SIZE], bytes.fromhex("0016020000003a"))
+    self.assertEqual(packets[1][:USB_HEADER_SIZE], bytes.fromhex("00160300000001"))
+    self.assertEqual(usb_packet_type(packets[0], header=DEVICE_ID), USB_FIRST)
     self.assertEqual(get_packet_value(packets[0]), 58)
-    self.assertEqual(get_packet_type(packets[1]), CONTINUATION)
+    self.assertEqual(usb_packet_type(packets[1], header=DEVICE_ID), USB_CONTINUATION)
     self.assertEqual(get_packet_value(packets[1]), 1)
 
   def test_long_payload_round_trips(self):
     """A long payload's continuations are numbered from 1, and the packets' chunks join back into
     the payload."""
     payload = bytes(i & 0xFF for i in range(200))
-    packets = wrap_payload(payload)
-    self.assertEqual(get_packet_type(packets[0]), FIRST)
+    packets = usb_wrap_payload(payload, header=DEVICE_ID)
+    self.assertEqual(usb_packet_type(packets[0], header=DEVICE_ID), USB_FIRST)
     for seq, packet in enumerate(packets[1:], 1):
-      self.assertEqual(get_packet_type(packet), CONTINUATION)
+      self.assertEqual(usb_packet_type(packet, header=DEVICE_ID), USB_CONTINUATION)
       self.assertEqual(get_packet_value(packet), seq)
-    reassembled = b"".join(p[HEADER_SIZE:] for p in packets)
+    reassembled = b"".join(p[USB_HEADER_SIZE:] for p in packets)
     self.assertEqual(reassembled, payload)
     self.assertEqual(get_packet_value(packets[0]), len(payload))
 
   def test_empty_payload_rejected(self):
     """An empty payload is refused."""
     with self.assertRaises(ValueError):
-      wrap_payload(b"")
+      usb_wrap_payload(b"", header=DEVICE_ID)
 
   def test_oversized_payload_rejected(self):
     """A payload above the maximum payload size is refused."""
     with self.assertRaises(ValueError):
-      wrap_payload(bytes(MAXIMUM_PAYLOAD + 1))
+      usb_wrap_payload(bytes(0x10000), header=DEVICE_ID)
 
 
 class PacketInspectionTests(unittest.TestCase):
@@ -87,10 +88,12 @@ class PacketInspectionTests(unittest.TestCase):
 
   def test_packet_type_requires_vantastar_header(self):
     """A packet's type is read from a VANTAstar header; another device id raises FrameError."""
-    self.assertEqual(get_packet_type(bytes.fromhex("0016010000000180")), SINGLE)
+    self.assertEqual(
+      usb_packet_type(bytes.fromhex("0016010000000180"), header=DEVICE_ID), USB_SINGLE
+    )
     # A CLARIOstar packet (header byte 0x0C) is not a VANTAstar packet.
     with self.assertRaises(FrameError):
-      get_packet_type(bytes.fromhex("000c010000000180"))
+      usb_packet_type(bytes.fromhex("000c010000000180"), header=DEVICE_ID)
 
   def test_packet_value_requires_full_header(self):
     """A packet shorter than its header raises FrameError."""
@@ -99,17 +102,17 @@ class PacketInspectionTests(unittest.TestCase):
 
   def test_host_acknowledgement_is_an_acceptance(self):
     """The host's acknowledgement is an acceptance."""
-    self.assertEqual(HOST_ACKNOWLEDGEMENT, bytes([0x00, DEVICE_ID, ACKNOWLEDGEMENT, 0x01]))
+    self.assertEqual(HOST_ACKNOWLEDGEMENT, bytes([0x00, DEVICE_ID, USB_ACK, 0x01]))
     self.assertTrue(is_acceptance(HOST_ACKNOWLEDGEMENT))
 
   def test_refusing_acknowledgement_is_not_an_acceptance(self):
     """An acknowledgement ending in 0x00 is a refusal, not an acceptance."""
-    refusal = bytes([0x00, DEVICE_ID, ACKNOWLEDGEMENT, 0x00])
+    refusal = bytes([0x00, DEVICE_ID, USB_ACK, 0x00])
     self.assertFalse(is_acceptance(refusal))
 
   def test_non_acknowledgement_is_not_an_acceptance(self):
     """A data packet is not an acceptance."""
-    (single,) = wrap_payload(b"\x80")
+    (single,) = usb_wrap_payload(b"\x80", header=DEVICE_ID)
     self.assertFalse(is_acceptance(single))
 
 
