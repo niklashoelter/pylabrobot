@@ -19,6 +19,7 @@ VANTAstar
    driver.features.absorbance.Absorbance
    driver.features.fluorescence.Fluorescence
    driver.features.luminescence.Luminescence
+   driver.features.shaker.Shaker
    driver.features.temperature_controller.TemperatureController
    driver.features.measurement.MonochromatorSettings
    driver.features.measurement.PlateGeometry

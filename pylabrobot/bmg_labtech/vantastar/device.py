@@ -9,8 +9,9 @@ from .driver.features.absorbance import Absorbance
 from .driver.features.drawer import Drawer
 from .driver.features.fluorescence import Fluorescence
 from .driver.features.luminescence import Luminescence
+from .driver.features.shaker import Shaker
 from .driver.features.temperature_controller import TemperatureController
-from .driver.master import ShakeMode, VANTAstarDriver
+from .driver.master import VANTAstarDriver
 
 SIZE_X = 420.0
 SIZE_Y = 520.0
@@ -71,7 +72,7 @@ class _VANTAstarPlateHolder(PlateHolder):
 
 class VANTAstarDevice(Resource):
   """The VANTAstar as a PyLabRobot resource: its plate holder, its features (``drawer``,
-  ``absorbance``, ``fluorescence``, ``luminescence``, ``temperature_controller``), and the driver
+  ``absorbance``, ``fluorescence``, ``luminescence``, ``shaker``, ``temperature_controller``), and the driver
   that runs it.
 
   Build one with the ``VANTAstar`` factory.
@@ -147,6 +148,11 @@ class VANTAstarDevice(Resource):
     return self.driver.luminescence
 
   @property
+  def shaker(self) -> Shaker:
+    """The shaker."""
+    return self.driver.shaker
+
+  @property
   def temperature_controller(self) -> TemperatureController:
     """The temperature controller (the incubator)."""
     return self.driver.temperature_controller
@@ -163,17 +169,6 @@ class VANTAstarDevice(Resource):
         drawer is then open for it to be taken out.
     """
     await self.driver.stop(accept_plate_left_in_device=accept_plate_left_in_device)
-
-  async def shake(self, mode: ShakeMode, speed: int, duration: int) -> None:
-    """Shake the plate.
-
-    Args:
-      mode: "orbital", "double_orbital" or "linear".
-      speed: rpm, a multiple of 100; the tested reader reports 700 rpm as its maximum for every
-        mode.
-      duration: seconds; the tested reader reports 1-3600 s as its range.
-    """
-    await self.driver.shake(mode, speed, duration)
 
 
 def VANTAstar(

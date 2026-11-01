@@ -371,21 +371,6 @@ class CommandTests(unittest.TestCase):
     )
     self.assertEqual(bytes([0x0C]) + parameters, GAIN_PLATE)
 
-  def test_shake_matches_voyager(self):
-    """Double orbital shaking at 300 rpm for 10 s builds Voyager's command."""
-    body = VANTAstarDriver.build_shake("double_orbital", 300, 10)
-    self.assertEqual(bytes([0x27]) + body, SHAKE_DOUBLE_ORBITAL_300_10)
-
-  def test_long_shake_pauses(self):
-    """A 600 s shake pauses 1 s every 59 s."""
-    body = VANTAstarDriver.build_shake("orbital", 500, 600)
-    self.assertEqual(body.hex(), "05040258" + "0001" + "003b")
-
-  def test_shake_speed_must_be_a_multiple_of_100(self):
-    """A shake speed that is not a multiple of 100 rpm is refused."""
-    with self.assertRaises(ValueError):
-      VANTAstarDriver.build_shake("orbital", 250, 10)
-
   def test_plate_geometry(self):
     """The standard 96-well plate encodes to the plate block of Voyager's absorbance RUN."""
     self.assertEqual(encode_plate_geometry(STANDARD_96), RUN_ABSORBANCE[1:18])
@@ -776,14 +761,6 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
     await driver.initialize()
     self.assertEqual(commands(driver)[:2], [bytes([0x80]), INIT])
     self.assertEqual(driver.discover().serial_number, "0421-000446")
-
-  async def test_shake_moves_the_plate_in_when_the_motors_are_off(self):
-    """Shaking with the motors off moves the plate in first, then shakes."""
-    replies = deque([STATUS_MOTORS_OFF] + [STATUS_IDLE] * 6)
-    driver = make_driver(lambda p: replies.popleft())
-    await driver.shake("double_orbital", 300, 10)
-    sent = [c for c in commands(driver) if c[0] != 0x80]
-    self.assertEqual(sent, [PLATE_IN, SHAKE_DOUBLE_ORBITAL_300_10])
 
   async def test_measurement(self):
     """A 96-well absorbance read requests the well list and the timing, polls the block status,

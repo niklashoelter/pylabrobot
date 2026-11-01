@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from pylabrobot.bmg_labtech.protocol.errors import FrameError
 from pylabrobot.bmg_labtech.protocol.framing import (
@@ -41,6 +41,7 @@ from .features.absorbance import Absorbance
 from .features.drawer import Drawer
 from .features.fluorescence import Fluorescence
 from .features.luminescence import Luminescence
+from .features.shaker import Shaker
 from .features.measurement import (
   DEFAULT_APERTURE_DISTANCE,
   MonochromatorSettings,
@@ -192,11 +193,6 @@ _RELEASE_BLOCK = bytes([0x01, 0x00, 0x01, 0x00, 0x00])
 # IncubatorCommand channels: all three.
 _ALL_INCUBATOR_CHANNELS = 0x07
 
-# IdleMoveCommand modes for the VANTAstar's shaking motions.
-_SHAKE_MODES = {"orbital": 5, "double_orbital": 7, "linear": 8}
-# Shakes this long or longer pause 1 s every 59 s, as Voyager sends them.
-_SHAKE_LONG = 300
-_SHAKE_ON_OFF = (59, 1)
 
 # Gain and focus adjustment settings Voyager sends: a focus scan from 16 mm down in 0.2 mm steps
 # (1 mm stop, unused), a smoothed and interpolated focal curve, integration time 12.  Without the
@@ -220,9 +216,6 @@ _FLUORESCENCE_SCAN = 0x82
 # RUN option byte after the mode byte: UseAutoGain, Voyager's enhanced dynamic range (fluorescence)
 # and automatic gain (luminescence); no gain is sent with it.
 _USE_AUTO_GAIN = 0x40
-ShakeMode = Literal["orbital", "double_orbital", "linear"]
-
-
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
@@ -296,6 +289,7 @@ class VANTAstarDriver:
     self.absorbance = Absorbance(self)
     self.fluorescence = Fluorescence(self)
     self.luminescence = Luminescence(self)
+    self.shaker = Shaker(self)
     self.temperature_controller = TemperatureController(self)
 
   # -- USB setup / teardown -------------------------------------------------
@@ -1082,49 +1076,9 @@ class VANTAstarDriver:
 
   # -- shaking --------------------------------------------------------------
 
-  @staticmethod
-  def build_shake(mode: ShakeMode, speed: int, duration: int) -> bytes:
-    """IdleMoveCommand fields: mode, speed code (rpm / 100 - 1), duration (s), off and on times.
-
-    Raises:
-      ValueError: if the mode is unknown, the speed not a positive multiple of 100 rpm, or the
-        duration not 1-65535 s.
-    """
-    if mode not in _SHAKE_MODES:
-      raise ValueError(f"shake mode must be one of {sorted(_SHAKE_MODES)}, got {mode!r}")
-    if speed < 100 or speed % 100 != 0:
-      raise ValueError(f"shake speed must be a positive multiple of 100 rpm, got {speed}")
-    if not 1 <= duration <= 0xFFFF:
-      raise ValueError(f"shake duration must be 1-65535 s, got {duration}")
-    on, off = _SHAKE_ON_OFF if duration >= _SHAKE_LONG else (0, 0)
-    return (
-      bytes([_SHAKE_MODES[mode], speed // 100 - 1])
-      + duration.to_bytes(2, "big")
-      + off.to_bytes(2, "big")
-      + on.to_bytes(2, "big")
-    )
-
-  async def shake(self, mode: ShakeMode, speed: int, duration: int) -> None:
-    """Shake the plate and wait until the shaking is done.
-
-    Like Voyager, first moves the plate in when the drawer is out or the motors are off.
-
-    Args:
-      mode: "orbital", "double_orbital" or "linear".
-      speed: rpm, a multiple of 100; the tested reader reports 700 rpm as its maximum for every
-        mode (not tested above).
-      duration: seconds.
-
-    Raises:
-      ValueError: if an argument is invalid (``build_shake``).
-      CommandRefusedError: if the reader refuses the shake.
-    """
-    body = self.build_shake(mode, speed, duration)
-    status = await self.request_status()
-    if status.drawer_open or not status.motors_enabled:
-      await self.drawer.close()
+  async def _idle_move(self, body: bytes) -> None:
+    """IdleMoveCommand with ``body``: the shaker's command."""
     await self.send_command(CommandId.IDLE_MOVE, body)
-    await self._wait_until_ready(duration + 60.0, self.default_poll_interval)
 
   # -- gain and focus adjustment --------------------------------------------
 

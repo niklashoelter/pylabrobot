@@ -33,5 +33,5 @@ class DrawerTests(unittest.IsolatedAsyncioTestCase):
     replies = deque([STATUS_MOTORS_OFF] + [STATUS_IDLE] * 6)
     driver = make_driver(lambda p: replies.popleft())
     driver.drawer.drawer_open = True
-    await driver.shake("double_orbital", 300, 10)
+    await driver.shaker.shake("double_orbital", 300, 10)
     self.assertFalse(driver.drawer.drawer_open)
