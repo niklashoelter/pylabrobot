@@ -15,7 +15,6 @@ from pylabrobot.bmg_labtech.protocol.framing import (
 )
 from pylabrobot.bmg_labtech.vantastar.driver.configuration_tests import HARDWARE_INFO
 from pylabrobot.bmg_labtech.vantastar.driver.errors import CommandRefusedError, DeviceError
-from pylabrobot.bmg_labtech.vantastar.driver.framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT
 from pylabrobot.bmg_labtech.vantastar.driver.features.measurement import (
   LUMINESCENCE_NO_FILTER,
   STANDARD_96,
@@ -26,6 +25,7 @@ from pylabrobot.bmg_labtech.vantastar.driver.features.measurement import (
   encode_plate_geometry,
   encode_well_mask,
 )
+from pylabrobot.bmg_labtech.vantastar.driver.framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT
 from pylabrobot.bmg_labtech.vantastar.driver.master import CommandId, VANTAstarDriver
 from pylabrobot.bmg_labtech.vantastar.driver.responses_tests import (
   ABSORBANCE_FIRST_PAGE,

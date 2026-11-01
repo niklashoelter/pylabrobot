@@ -41,12 +41,11 @@ from .features.absorbance import Absorbance
 from .features.drawer import Drawer
 from .features.fluorescence import Fluorescence
 from .features.luminescence import Luminescence
-from .features.shaker import Shaker
 from .features.measurement import (
   DEFAULT_APERTURE_DISTANCE,
+  STANDARD_96,
   MonochromatorSettings,
   PlateGeometry,
-  STANDARD_96,
   WellScan,
   _focal_height_bytes,
   _hundredth_mm,
@@ -56,6 +55,7 @@ from .features.measurement import (
   encode_well_mask,
   encode_well_scan,
 )
+from .features.shaker import Shaker
 from .features.temperature_controller import TemperatureController
 from .framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT, get_packet_value, is_acceptance
 from .responses import (
