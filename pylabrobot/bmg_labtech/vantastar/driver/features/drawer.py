@@ -3,6 +3,8 @@
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from pylabrobot.resources import PlateHolder
+
 if TYPE_CHECKING:
   from ..master import VANTAstarDriver
 
@@ -23,6 +25,8 @@ class Drawer:
 
   Attributes:
     drawer_open: whether the drawer was out when last sensed; None until it is first sensed.
+    plate_holder: the plate holder the drawer carries (set by ``VANTAstarDevice``); the measurement
+      features read the plate from it.
   """
 
   # Seconds a move may take: an open takes about 7 s, a close about 10 s.
@@ -35,6 +39,7 @@ class Drawer:
     """
     self._driver = driver
     self.drawer_open: Optional[bool] = None
+    self.plate_holder: Optional[PlateHolder] = None
 
   async def sense_drawer_open(self) -> bool:
     """Sense whether the drawer is out."""

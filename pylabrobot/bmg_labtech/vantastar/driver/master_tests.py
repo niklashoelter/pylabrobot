@@ -16,23 +16,21 @@ from pylabrobot.bmg_labtech.protocol.framing import (
 from pylabrobot.bmg_labtech.vantastar.driver.configuration_tests import HARDWARE_INFO
 from pylabrobot.bmg_labtech.vantastar.driver.errors import CommandRefusedError, DeviceError
 from pylabrobot.bmg_labtech.vantastar.driver.framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT
-from pylabrobot.bmg_labtech.vantastar.driver.master import (
+from pylabrobot.bmg_labtech.vantastar.driver.features.measurement import (
   LUMINESCENCE_NO_FILTER,
   STANDARD_96,
-  CommandId,
   MonochromatorSettings,
-  VANTAstarDriver,
   WellScan,
   compute_monochromator_settings,
   compute_scan_monochromators,
   encode_plate_geometry,
   encode_well_mask,
 )
+from pylabrobot.bmg_labtech.vantastar.driver.master import CommandId, VANTAstarDriver
 from pylabrobot.bmg_labtech.vantastar.driver.responses_tests import (
   ABSORBANCE_FIRST_PAGE,
   ABSORBANCE_LAST_PAGE,
   GAIN_DATA,
-  STATUS_AFTER_INCUBATOR_COMMAND,
   STATUS_HEATING,
   STATUS_INIT_RUNNING,
   STATUS_NOT_INITIALIZED,
@@ -786,30 +784,6 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
     await driver.shake("double_orbital", 300, 10)
     sent = [c for c in commands(driver) if c[0] != 0x80]
     self.assertEqual(sent, [PLATE_IN, SHAKE_DOUBLE_ORBITAL_300_10])
-
-  async def test_temperature(self):
-    """Setting the temperature and stopping temperature control send Voyager's incubator
-    commands."""
-    driver = make_driver(lambda p: STATUS_IDLE)
-    await driver.set_temperature(30)
-    await driver.stop_temperature_control()
-    sent = [c for c in commands(driver) if c[0] == 0x06]
-    self.assertEqual(sent, [INCUBATOR_ON_30, INCUBATOR_OFF])
-
-  async def test_temperature_commands_return_once_temperatures_are_reported(self):
-    """Setting the temperature returns only once a status reply reports temperatures again."""
-    replies = deque([STATUS_IDLE] + [STATUS_AFTER_INCUBATOR_COMMAND] * 3)
-    driver = make_driver(lambda p: replies.popleft() if replies else STATUS_HEATING)
-    await driver.set_temperature(30)
-    self.assertEqual(len(replies), 0)
-    self.assertEqual(await driver.get_temperatures(), (30.1, 30.6, 30.5))
-
-  async def test_temperature_command_times_out_without_temperatures(self):
-    """Setting the temperature raises TimeoutError when no status reply reports temperatures."""
-    driver = make_driver(lambda p: STATUS_AFTER_INCUBATOR_COMMAND)
-    driver.incubator_settle_timeout = 0
-    with self.assertRaises(TimeoutError):
-      await driver.set_temperature(30)
 
   async def test_measurement(self):
     """A 96-well absorbance read requests the well list and the timing, polls the block status,

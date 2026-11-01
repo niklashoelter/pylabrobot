@@ -16,9 +16,13 @@ VANTAstar
    driver.master.VANTAstarDriver
    driver.master.VANTAstarStatus
    driver.features.drawer.Drawer
-   driver.master.MonochromatorSettings
-   driver.master.PlateGeometry
-   driver.master.WellScan
+   driver.features.absorbance.Absorbance
+   driver.features.fluorescence.Fluorescence
+   driver.features.luminescence.Luminescence
+   driver.features.temperature_controller.TemperatureController
+   driver.features.measurement.MonochromatorSettings
+   driver.features.measurement.PlateGeometry
+   driver.features.measurement.WellScan
    driver.responses.GainFocus
    driver.configuration.VANTAstarConfiguration
    driver.errors.CommandRefusedError

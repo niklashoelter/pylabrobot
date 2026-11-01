@@ -12,7 +12,7 @@ The commands are sent with the fields and in the order BMG's Voyager software us
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from pylabrobot.bmg_labtech.protocol.errors import FrameError
@@ -37,7 +37,25 @@ from .errors import (
   DeviceError,
   describe_codes,
 )
+from .features.absorbance import Absorbance
 from .features.drawer import Drawer
+from .features.fluorescence import Fluorescence
+from .features.luminescence import Luminescence
+from .features.measurement import (
+  DEFAULT_APERTURE_DISTANCE,
+  MonochromatorSettings,
+  PlateGeometry,
+  STANDARD_96,
+  WellScan,
+  _focal_height_bytes,
+  _hundredth_mm,
+  _tenth_nm,
+  encode_monochromator,
+  encode_plate_geometry,
+  encode_well_mask,
+  encode_well_scan,
+)
+from .features.temperature_controller import TemperatureController
 from .framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT, get_packet_value, is_acceptance
 from .responses import (
   CONFIRMATION_ID,
@@ -171,10 +189,7 @@ _MW_BLOCK_STATUS = bytes([CommandId.MW_BLOCK, 0x00, 0x00, 0x00, 0xFF, 0xFF])
 # an absorbance spectrum.
 _RELEASE_BLOCK = bytes([0x01, 0x00, 0x01, 0x00, 0x00])
 
-# IncubatorCommand types.  Voyager switches heating off with temperature monitoring, which keeps
-# the incubator temperatures in the replies.
-_INCUBATOR_ON = 0x01
-_INCUBATOR_MONITOR = 0x02
+# IncubatorCommand channels: all three.
 _ALL_INCUBATOR_CHANNELS = 0x07
 
 # IdleMoveCommand modes for the VANTAstar's shaking motions.
@@ -201,247 +216,11 @@ _MONO_POSITIONS = 7
 # RUN chromatic configuration of a fluorescence scan: ChromaticScan1 and ChromaticsType; the scan
 # sends the monochromator settings of its first and its last point.
 _FLUORESCENCE_SCAN = 0x82
-# Slits Voyager sets in a fluorescence scan: 2 on the scanned side, 3 on the fixed one.
-_SCANNED_SLIT = 2
-_FIXED_SLIT = 3
 
 # RUN option byte after the mode byte: UseAutoGain, Voyager's enhanced dynamic range (fluorescence)
 # and automatic gain (luminescence); no gain is sent with it.
 _USE_AUTO_GAIN = 0x40
-# Luminescence's aperture distance when none is given (Voyager's default, 0.5 mm).
-DEFAULT_APERTURE_DISTANCE = 0.5
-
 ShakeMode = Literal["orbital", "double_orbital", "linear"]
-WellScanMode = Literal["orbital", "spiral"]
-ScanSide = Literal["excitation", "emission"]
-
-# WellScanningMode values (RUN and GainPlateCommand).
-_WELL_SCAN_MODES = {"orbital": 3, "spiral": 4}
-
-
-@dataclass(frozen=True)
-class WellScan:
-  """Averaging over an area of each well instead of reading its centre: the reader reads along an
-  orbit, or a spiral, of ``diameter`` mm around the centre.  The reader refuses a diameter wider
-  than the well (quit code 65; 7 mm on a 96-well plate with 6.96 mm wells)."""
-
-  mode: WellScanMode
-  diameter: int
-
-
-@dataclass(frozen=True)
-class PlateGeometry:
-  """A plate as the reader sees it, in mm: its size, the centres of its first and last well (from
-  the plate's left and back edges), its grid, and its well size (a round well's diameter, a square
-  well's width) and shape (0 round, 1 square, as Voyager sends them)."""
-
-  length: float
-  width: float
-  first_x: float
-  first_y: float
-  last_x: float
-  last_y: float
-  columns: int
-  rows: int
-  well_size: float
-  well_shape: int = 0
-
-
-# Voyager's "STANDARD 96" plate definition.
-STANDARD_96 = PlateGeometry(
-  length=127.76,
-  width=85.48,
-  first_x=14.38,
-  first_y=11.24,
-  last_x=113.38,
-  last_y=74.24,
-  columns=12,
-  rows=8,
-  well_size=6.58,
-)
-
-
-@dataclass(frozen=True)
-class MonochromatorSettings:
-  """The monochromator of one fluorescence chromatic: band edges and dichroic in nm, slit
-  positions as the reader numbers them (excitation 3 = 1.0 mm, emission 4 = 2.0 mm, the slits
-  BMG's filter software sets for fluorescence)."""
-
-  excitation_lower: float
-  excitation_upper: float
-  dichroic: float
-  emission_lower: float
-  emission_upper: float
-  excitation_slit: int = 3
-  emission_slit: int = 4
-
-
-# Voyager's luminescence optics with no filter, as BMG's filter software returns them: raw value 1
-# for the dichroic and both emission edges, the LUM lens (6) in the emission slit, excitation
-# unused.
-LUMINESCENCE_NO_FILTER = MonochromatorSettings(
-  excitation_lower=0,
-  excitation_upper=0,
-  dichroic=0.1,
-  emission_lower=0.1,
-  emission_upper=0.1,
-  excitation_slit=0,
-  emission_slit=6,
-)
-
-
-def compute_monochromator_settings(
-  excitation_wavelength: float,
-  excitation_bandwidth: float,
-  emission_wavelength: float,
-  emission_bandwidth: float,
-  dichroic: Optional[float] = None,
-) -> MonochromatorSettings:
-  """Nominal band edges (centre +/- bandwidth / 2) and, by default, the dichroic Voyager sets
-  automatically: midway between the excitation's upper and the emission's lower nominal edge, in
-  0.1 nm (rounded half to even).
-
-  Voyager computes the band edges with BMG's filter software, which narrows them symmetrically by
-  an amount that depends on the wavelength, the bandwidth and the slit: for excitation 365/8 and
-  emission 400/10 it sends 362.9-367.1 and 397.8-402.2 nm, where the nominal edges are 361-369 and
-  395-405 nm.  Pass ``MonochromatorSettings`` directly to read with Voyager's edges.
-  """
-  excitation_upper = excitation_wavelength + excitation_bandwidth / 2
-  emission_lower = emission_wavelength - emission_bandwidth / 2
-  return MonochromatorSettings(
-    excitation_lower=excitation_wavelength - excitation_bandwidth / 2,
-    excitation_upper=excitation_upper,
-    dichroic=(excitation_upper + emission_lower) / 2 if dichroic is None else dichroic,
-    emission_lower=emission_lower,
-    emission_upper=emission_wavelength + emission_bandwidth / 2,
-  )
-
-
-def compute_scan_monochromators(
-  scan: ScanSide,
-  start_wavelength: float,
-  end_wavelength: float,
-  fixed_wavelength: float,
-  *,
-  excitation_bandwidth: float,
-  emission_bandwidth: float,
-  dichroic: Optional[float] = None,
-) -> Tuple[MonochromatorSettings, MonochromatorSettings]:
-  """The monochromator settings of a fluorescence scan's first and last point: nominal band edges,
-  the dichroic as ``compute_monochromator_settings`` sets it for each point unless given, and the
-  slits Voyager sets in a scan (2 on the scanned side, 3 on the fixed one).
-
-  Args:
-    scan: the scanned side; the other stays at ``fixed_wavelength``.
-    start_wavelength: the first point's wavelength in nm.
-    end_wavelength: the last point's wavelength in nm.
-    fixed_wavelength: nm.
-    excitation_bandwidth: nm.
-    emission_bandwidth: nm.
-    dichroic: nm for every point; None to compute it per point.
-  """
-  points = []
-  for wavelength in (start_wavelength, end_wavelength):
-    excitation, emission = (
-      (wavelength, fixed_wavelength) if scan == "excitation" else (fixed_wavelength, wavelength)
-    )
-    settings = compute_monochromator_settings(
-      excitation, excitation_bandwidth, emission, emission_bandwidth, dichroic
-    )
-    points.append(
-      replace(
-        settings,
-        excitation_slit=_SCANNED_SLIT if scan == "excitation" else _FIXED_SLIT,
-        emission_slit=_SCANNED_SLIT if scan == "emission" else _FIXED_SLIT,
-      )
-    )
-  return points[0], points[1]
-
-
-def encode_well_scan(well_scan: Optional[WellScan]) -> bytes:
-  """The RUN well scanning fields: the mode, then for a scan the matrix width (0) and the diameter
-  in mm; a point read is mode 0 alone.
-
-  Raises:
-    ValueError: if the mode is unknown or the diameter not 1-255 mm.
-  """
-  if well_scan is None:
-    return b"\x00"
-  if well_scan.mode not in _WELL_SCAN_MODES:
-    raise ValueError(f"well scan mode must be one of {sorted(_WELL_SCAN_MODES)}")
-  if not 1 <= well_scan.diameter <= 0xFF:
-    raise ValueError(f"well scan diameter must be 1-255 mm, got {well_scan.diameter}")
-  return bytes([_WELL_SCAN_MODES[well_scan.mode], 0, well_scan.diameter])
-
-
-def _tenth_nm(wavelength: float) -> bytes:
-  """A wavelength in nm as u16 BE in 0.1 nm."""
-  return round(wavelength * 10).to_bytes(2, "big")
-
-
-def _hundredth_mm(length: float) -> bytes:
-  """A length in mm as u16 BE in 0.01 mm."""
-  return round(length * 100).to_bytes(2, "big")
-
-
-def _focal_height_bytes(focal_height: float) -> bytes:
-  """A focal height in mm as the reader takes it: 0.01 mm units, in Voyager's 0.1 mm steps."""
-  return (round(focal_height * 10) * 10).to_bytes(2, "big")
-
-
-def encode_monochromator(settings: MonochromatorSettings) -> bytes:
-  """The 14-byte monochromator block: excitation short-pass (upper edge) and long-pass (lower edge),
-  dichroic, emission short-pass and long-pass, in 0.1 nm, then the emission and excitation slit."""
-  return (
-    _tenth_nm(settings.excitation_upper)
-    + _tenth_nm(settings.excitation_lower)
-    + _tenth_nm(settings.dichroic)
-    + _tenth_nm(settings.emission_upper)
-    + _tenth_nm(settings.emission_lower)
-    + settings.emission_slit.to_bytes(2, "big")
-    + settings.excitation_slit.to_bytes(2, "big")
-  )
-
-
-def encode_plate_geometry(geometry: PlateGeometry) -> bytes:
-  """The 17-byte plate block: lengths in 0.01 mm, columns, rows, well size, well shape."""
-  return (
-    b"".join(
-      _hundredth_mm(v)
-      for v in (
-        geometry.length,
-        geometry.width,
-        geometry.first_x,
-        geometry.first_y,
-        geometry.last_x,
-        geometry.last_y,
-      )
-    )
-    + bytes([geometry.columns, geometry.rows])
-    + _hundredth_mm(geometry.well_size)
-    + bytes([geometry.well_shape])
-  )
-
-
-def encode_well_mask(
-  columns: int, rows: int, wells: Optional[Sequence[Tuple[int, int]]] = None
-) -> bytes:
-  """The 48-byte well mask.  ``wells`` are 0-based (row, column) pairs; None selects all wells.
-  Bit = row * columns + column, most significant bit first.
-
-  Raises:
-    ValueError: if the plate has more than 384 wells.
-  """
-  if columns * rows > 8 * 48:
-    raise ValueError(f"the well mask holds up to 384 wells, the plate has {columns * rows}")
-  selected = None if wells is None else set(wells)
-  mask = bytearray(48)
-  for r in range(rows):
-    for c in range(columns):
-      if selected is None or (r, c) in selected:
-        bit = r * columns + c
-        mask[bit // 8] |= 0x80 >> (bit % 8)
-  return bytes(mask)
 
 
 # ---------------------------------------------------------------------------
@@ -456,8 +235,6 @@ class VANTAstarDriver:
   default_poll_interval: float = 0.25
   # Seconds between data block polls during a read (Voyager polls about every 0.17 s).
   measurement_poll_interval: float = 0.1
-  # Seconds an incubator command may take until the reader reports temperatures again.
-  incubator_settle_timeout: float = 5.0
   _USB_PACKET_TIMEOUT: int = 5
   _RETRY_SETTLE: float = 0.08
   # The communication protocol version requested in INIT.
@@ -516,6 +293,10 @@ class VANTAstarDriver:
     self.configuration = VANTAstarConfiguration()
     self._hardware_info_reply: Optional[bytes] = None
     self.drawer = Drawer(self)
+    self.absorbance = Absorbance(self)
+    self.fluorescence = Fluorescence(self)
+    self.luminescence = Luminescence(self)
+    self.temperature_controller = TemperatureController(self)
 
   # -- USB setup / teardown -------------------------------------------------
 
@@ -1425,35 +1206,9 @@ class VANTAstarDriver:
       + bytes([_ALL_INCUBATOR_CHANNELS])
     )
 
-  async def _wait_for_temperatures(self) -> None:
-    """Wait until the reader reports its incubator temperatures; it reports none (all zero) for up
-    to about a second after an IncubatorCommand."""
-    await self._wait_until_ready(
-      self.incubator_settle_timeout,
-      self.default_poll_interval,
-      until=lambda status: status.temperatures is not None,
-    )
-
-  async def set_temperature(self, temperature: float) -> None:
-    """Switch the incubator on, heating to ``temperature`` degrees C; returns once the reader
-    reports its temperatures again.
-
-    Raises:
-      TimeoutError: if the reader reports no temperatures ``incubator_settle_timeout`` seconds
-        after the command.
-    """
-    await self.send_command(CommandId.INCUBATOR, self.build_incubator(_INCUBATOR_ON, temperature))
-    await self._wait_for_temperatures()
-
-  async def stop_temperature_control(self) -> None:
-    """Switch heating off, keeping the temperatures monitored (as Voyager does); returns once the
-    reader reports its temperatures again.
-
-    Raises:
-      TimeoutError: as for ``set_temperature``.
-    """
-    await self.send_command(CommandId.INCUBATOR, self.build_incubator(_INCUBATOR_MONITOR, 0))
-    await self._wait_for_temperatures()
+  async def _set_incubator(self, command_type: int, temperature: float) -> None:
+    """Send an IncubatorCommand (``build_incubator``); the temperature controller's commands."""
+    await self.send_command(CommandId.INCUBATOR, self.build_incubator(command_type, temperature))
 
   async def get_temperatures(self) -> Optional[Tuple[float, float, float]]:
     """The three incubator sensor readings in degrees C (the first is the one Voyager displays),
